@@ -1,0 +1,25 @@
+spring:
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: mistral:7b-instruct   # ✅ NOT llama3.1
+          temperature: 0.2
+      embedding:
+        options:
+          model: nomic-embed-text
+
+    vectorstore:
+      pgvector:
+        initialize-schema: true
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/postgres
+    username: postgres
+    password: postgres
+
+
+  vectorstore:
+    pgvector:
+      initialize-schema: true

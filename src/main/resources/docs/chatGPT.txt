@@ -1,0 +1,37 @@
+# Spring AI Agent Session – Resume Note
+
+## Stack
+- Spring Boot
+- Spring AI
+- Ollama (Docker)
+- Model: mistral:7b-instruct
+- Embeddings: nomic-embed-text
+- Vector DB: pgvector (Postgres)
+- RAG + Tool Calling + Agent Loop
+
+## Architecture
+- Agent loop: PLAN → RETRIEVE → TOOL → ANSWER
+- Bounded (2 LLM calls max)
+- Planner returns JSON:
+  - needsRetrieval
+  - needsTool
+  - toolName
+  - toolArgument
+- AgentPlan is a Java record (no Lombok)
+
+## Current Status
+- RAG works
+- Tool calling works
+- Mixed questions partially work
+- Planner needs improvement for multi-intent questions
+- Last fix discussed: strengthen planner prompt to detect MULTIPLE intents
+
+## Last Known Issue
+- Mixed query:
+  "Can I return a damaged item and what is the status of order 12345?"
+- Tool ran, RAG did not
+- Root cause: planner prompt under-specified
+
+## Next Step Planned
+- Update planner system prompt to handle multi-intent questions
+- Then re-test mixed queries
