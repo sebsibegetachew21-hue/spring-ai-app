@@ -1,142 +1,238 @@
 package com.yourapp.ai.agent;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yourapp.ai.rag.Retriever;
+import com.yourapp.ai.memory.ConversationMemory;
+import com.yourapp.ai.retreival.RetrievalResult;
+import com.yourapp.ai.retreival.RetrieverService;
 import com.yourapp.ai.tools.OrderTools;
-import java.util.*;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.document.Document;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.Map;
 
 @Service
 public class AgentOrchestrator {
 
-  private final ChatClient chatClient;
-  private final Retriever retriever;
-  private final OrderTools orderTools;
-  private final ObjectMapper objectMapper = new ObjectMapper();
+    private static final String ANSWER_SYSTEM_PROMPT = """
+            You are a backend assistant.
 
-  public AgentOrchestrator(
-          ChatClient.Builder builder,
-          Retriever retriever,
-          OrderTools orderTools
-  ) {
-    this.chatClient = builder.build();
-    this.retriever = retriever;
-    this.orderTools = orderTools;
-  }
+            Rules:
+            - Use CONTEXT only for policies and documentation
+            - Use TOOL_RESULT as authoritative system data
+            - Use MEMORY only as reference
+            - Do NOT guess
+            - Do NOT describe tool results as simulated or hypothetical
+            - If information is missing, say so
+            """;
 
-  /**
-   * Entry point for the agent.
-   * This method enforces a strict 2-call agent loop:
-   * 1) PLAN
-   * 2) ANSWER
-   */
-  public AgentAnswer run(String question) {
-    try {
-      // 1️⃣ PLAN (LLM Call #1)
-      AgentPlan plan = plan(question);
 
-      // 2️⃣ RETRIEVE (optional)
-      String context = "";
-      List<String> citations = new ArrayList<>();
+    private static final String PLANNER_SYSTEM_PROMPT = """
+            You are an agent planner.
 
-      if (plan.needsRetrieval()) {
-        List<Document> docs = retriever.topK(question, 6);
+            Your job is to decide which actions are required to answer the user's question.
 
-        StringBuilder ctx = new StringBuilder();
-        for (Document d : docs) {
-          String path = String.valueOf(d.getMetadata().getOrDefault("path", "unknown"));
-          String chunkStart = String.valueOf(d.getMetadata().getOrDefault("chunkStart", "?"));
+            You may choose:
+            - retrieval (for policies, documentation, FAQs)
+            - tool usage (for system data like order status)
+            - both
+            - or neither
 
-          citations.add(path + "#chunkStart=" + chunkStart);
+            IMPORTANT RULES:
 
-          ctx.append("\n[DOC] ")
-                  .append(path)
-                  .append(" (chunkStart=")
-                  .append(chunkStart)
-                  .append(")\n")
-                  .append(d.getText())
-                  .append("\n");
-        }
-        context = ctx.toString();
-      }
+            1. If the question mentions ANY of:
+               - return
+               - refund
+               - damaged
+               - policy
+               - eligibility
+               - warranty
+               → retrieval IS REQUIRED
 
-      // 3️⃣ TOOL CALL (optional)
-      String toolResult = "";
+            2. If the question asks about a specific order status
+               → tool usage IS REQUIRED
 
-      if (plan.needsTool()) {
-        if ("getOrderStatus".equals(plan.toolName())) {
-          Map<String, Object> result =
-                  orderTools.getOrderStatus(plan.toolArgument());
-          toolResult = result.toString();
-        }
-      }
+            3. If the question contains multiple intents
+               → BOTH retrieval AND tool usage may be required
 
-      // 4️⃣ ANSWER (LLM Call #2)
-      String answer = chatClient.prompt()
-              .system("""
-You are a backend assistant.
+            4. Memory may resolve references like "it" or "the order",
+               but memory does NOT replace retrieval for policies.
 
-Rules:
-- Use CONTEXT only for company policies or documents.
-- Use TOOL_RESULT only if it is provided.
-- NEVER guess or simulate live data.
-- If information is missing, say so clearly.
-""")
-              .user("""
-QUESTION:
-%s
+            Respond ONLY in JSON with this exact shape:
 
-CONTEXT:
-%s
+            {
+              "needsRetrieval": true|false,
+              "needsTool": true|false,
+              "toolName": "getOrderStatus" | null,
+              "toolArgument": "<orderId>" | null
+            }
+            """;
 
-TOOL_RESULT:
-%s
-""".formatted(question, context, toolResult))
-              .call()
-              .content();
 
-      return new AgentAnswer(answer, citations, "medium");
+    private final ChatClient chatClient;
+    private final OrderTools orderTools;
+    private final RetrieverService retriever;
 
-    } catch (Exception e) {
-      throw new RuntimeException("Agent execution failed", e);
+    public AgentOrchestrator(
+            ChatClient chatClient,
+            OrderTools orderTools,
+            RetrieverService retriever
+    ) {
+        this.chatClient = chatClient;
+        this.orderTools = orderTools;
+        this.retriever = retriever;
     }
-  }
 
-  /**
-   * Planner step (LLM Call #1).
-   * Decides whether retrieval and/or tools are required.
-   */
-  private AgentPlan plan(String question) throws Exception {
+    // use chatClient for BOTH planner and answer
 
-    String json = chatClient.prompt()
-            .system("""
-You are an AI planner.
 
-Your job is to decide what actions are required.
-You MUST NOT answer the question.
+    /**
+     * Main agent entry point
+     */
+    public AgentAnswer run(String question, ConversationMemory memory) {
 
-Rules:
-- Return ONLY valid JSON.
-- If company documents are required, set needsRetrieval=true.
-- If live order data is required, set needsTool=true.
-- Use toolName=getOrderStatus for order status queries.
-- Extract orderId if present.
-- If no tool is needed, set needsTool=false.
+        /* -------------------------------------------------
+         * 1. Enrich question with MEMORY (read-only)
+         * ------------------------------------------------- */
+        String enrichedQuestion = question;
 
-JSON schema:
-{
-  "needsRetrieval": true|false,
-  "needsTool": true|false,
-  "toolName": "getOrderStatus" | null,
-  "toolArgument": "string" | null
-}
-""")
-            .user(question)
-            .call()
-            .content();
+        if (memory.contains("lastOrderId")) {
+            enrichedQuestion +=
+                    "\n\nPrevious context: lastOrderId=" + memory.get("lastOrderId");
+        }
 
-    return objectMapper.readValue(json, AgentPlan.class);
-  }
+        /* -------------------------------------------------
+         * 2. PLAN (LLM #1)
+         * ------------------------------------------------- */
+        AgentPlan plan = plan(enrichedQuestion);
+
+        System.out.println("AGENT PLAN = " + plan);
+
+        /* -------------------------------------------------
+         * 3. RETRIEVE (RAG)
+         * ------------------------------------------------- */
+        String contextBlock = "";
+        List<String> citations = List.of();
+
+        if (plan.needsRetrieval()) {
+            RetrievalResult retrieval = retriever.retrieve(question);
+            contextBlock = "CONTEXT:\n" + retrieval.context() + "\n\n";
+            citations = retrieval.citations();
+        }
+
+        /* -------------------------------------------------
+         * 4. TOOL EXECUTION (deterministic, code-owned)
+         * ------------------------------------------------- */
+        String toolResultBlock = "";
+
+        if (plan.needsTool() && plan.toolArgument() != null) {
+            String orderId = plan.toolArgument();
+
+            Map<String, Object> result =
+                    orderTools.getOrderStatus(orderId);
+
+            // Persist to MEMORY (write-only by code)
+            memory.put("lastOrderId", orderId);
+            memory.put("lastOrderStatus", result.get("status"));
+
+            toolResultBlock =
+                    "TOOL_RESULT:\n" + result + "\n\n";
+        }
+
+        /* -------------------------------------------------
+         * 5. ANSWER (LLM #2)
+         * ------------------------------------------------- */
+        String memoryBlock = "";
+
+        if (!memory.snapshot().isEmpty()) {
+            memoryBlock =
+                    "MEMORY (read-only):\n" +
+                            memory.snapshot() +
+                            "\n\n";
+        }
+
+        String finalPrompt =
+                memoryBlock +
+                        "QUESTION:\n" + question + "\n\n" +
+                        contextBlock +
+                        toolResultBlock +
+                        """
+                                Answer the question using:
+                                - CONTEXT for policies and documentation
+                                - TOOL_RESULT for system data
+                                - MEMORY only as reference
+                                                
+                                Rules:
+                                - Do NOT guess
+                                - Do NOT describe tool results as simulated
+                                - If information is missing, say so
+                                """;
+
+        String answer =
+                chatClient.prompt()
+                        .system(system -> system.text(ANSWER_SYSTEM_PROMPT))
+                        .user(user -> user.text(finalPrompt))
+                        .call()
+                        .content();
+
+
+//        String answer =
+//                response.getResult().getOutput().getText();
+
+        List<String> finalCitations =
+                plan.needsRetrieval() ? citations : List.of();
+
+        return new AgentAnswer(answer, finalCitations, "medium");
+    }
+
+    /* -------------------------------------------------
+     * PLANNER (LLM-based, intent only)
+     * ------------------------------------------------- */
+    private AgentPlan plan(String enrichedQuestion) {
+
+        String plannerPrompt =
+                """
+                        You are an AI planner.
+                                
+                        You MUST decompose the user's question into independent intents.
+                        You MUST NOT answer the question.
+                                
+                        Policy Intent:
+                        - refund
+                        - return
+                        - damaged item
+                        - policy
+                        - FAQ
+                        - terms
+                                
+                        Operational Intent:
+                        - order status
+                        - status of order
+                        - tracking
+                        - delivery
+                        - shipment
+                        - ANY numeric identifier
+                                
+                        Rules:
+                        - If policy intent → needsRetrieval = true
+                        - If operational intent → needsTool = true
+                        - If a number is present, extract it as toolArgument
+                                
+                        Return ONLY valid JSON:
+                        {
+                          "needsRetrieval": true|false,
+                          "needsTool": true|false,
+                          "toolArgument": "string" | null
+                        }
+                        """;
+
+        String json =
+                chatClient.prompt()
+                        .system(system -> system.text(PLANNER_SYSTEM_PROMPT))
+                        .user(user -> user.text(enrichedQuestion))
+                        .call()
+                        .content();
+
+        return PlannerOutputParser.parse(json);
+    }
 }

@@ -1,3 +1,27 @@
+==================================Jan 03===========================================
+Project Summary
+
+I am building a production-style agentic RAG system using Spring Boot + Spring AI, following the official Spring AI concepts:
+https://docs.spring.io/spring-ai/reference/concepts.html
+
+
+Stack
+
+Java + Spring Boot
+
+Spring AI
+
+Ollama (Docker)
+
+Chat model: mistral:7b-instruct
+
+Embedding model: nomic-embed-text
+
+Vector DB: pgvector (Postgres)
+
+REST API (POST /chat)
+
+
 # Spring AI Agent Session – Resume Note
 
 ## Stack
@@ -35,3 +59,230 @@
 ## Next Step Planned
 - Update planner system prompt to handle multi-intent questions
 - Then re-test mixed queries
+====================================Jan 04=============================================
+
+AI HANDOFF CONTEXT — Spring AI Agent Project
+===========================================
+
+Project Summary
+---------------
+I am building a production-style agentic RAG system using Spring Boot + Spring AI,
+based on the official Spring AI concepts documentation:
+https://docs.spring.io/spring-ai/reference/concepts.html
+
+This is NOT a demo chatbot.
+It is an explicitly orchestrated agent with tools, retrieval, and memory.
+
+
+Stack
+-----
+- Java + Spring Boot
+- Spring AI
+- Ollama (Docker)
+- Chat model: mistral:7b-instruct
+- Embedding model: nomic-embed-text
+- Vector DB: pgvector (Postgres)
+- REST API: POST /chat
+
+
+Architecture (CRITICAL)
+-----------------------
+The agent follows a bounded loop:
+
+PLAN → RETRIEVE → TOOL → ANSWER
+
+Rules:
+- Maximum 2 LLM calls per request
+- Planner returns strict JSON only (no prose)
+- Memory is owned by application code, NOT the LLM
+- Tools are deterministic Java methods
+- Retrieval is used ONLY for policies / documentation
+- Tool calls are used ONLY for system data (e.g. order status)
+
+
+Planner Contract
+----------------
+Planner output JSON shape:
+
+{
+  "needsRetrieval": true | false,
+  "needsTool": true | false,
+  "toolName": "getOrderStatus" | null,
+  "toolArgument": "12345" | null
+}
+
+Planner rules:
+- If question mentions return / refund / damaged / policy → retrieval REQUIRED
+- If question asks about order status → tool REQUIRED
+- Multi-intent questions may require BOTH
+- Memory may resolve references like “it”
+- Memory NEVER replaces retrieval for policies
+
+
+Memory Design
+-------------
+- In-code ConversationMemory
+- Tools write memory (e.g. lastOrderId, lastOrderStatus)
+- Planner reads memory to resolve references (“it”, “the order”)
+- LLM receives a read-only snapshot of memory
+- Memory is currently in-memory (testing mode)
+
+Example memory snapshot:
+{
+  "lastOrderId": "12345",
+  "lastOrderStatus": "IN_TRANSIT"
+}
+
+
+Tools
+-----
+Example tool:
+Map<String, Object> getOrderStatus(String orderId)
+
+Rules:
+- Tools are deterministic
+- Tools write to memory
+- LLM never mutates memory
+
+
+RAG (Retrieval-Augmented Generation)
+------------------------------------
+- Used only for policies, FAQs, and documentation
+- Vector store: pgvector (Postgres)
+- Retriever returns chunks + citations
+- Answer prompt must NOT introduce policy info unless retrieval occurred
+
+
+Current Status (Verified)
+-------------------------
+- Tool calling works
+- RAG works
+- Memory works (resolves “it” correctly)
+- Multi-intent questions work after planner prompt fix
+- Citations currently show “classpath” (acceptable for now)
+- Answer tone slightly verbose (prompt polish optional)
+
+Verified interaction:
+1. “What is the status of order 12345?”
+2. “Can I return it if it arrives damaged?”
+→ Correct tool + memory + retrieval behavior
+
+
+Next Planned Steps (NOT DONE YET)
+--------------------------------
+1. Add planner unit tests to lock multi-intent behavior
+2. Make memory production-safe:
+   - Add conversationId
+   - Implement MemoryStore (Map → Redis)
+3. Optional: add Kafka as a tool
+4. Optional: split planner vs answer models
+
+
+IMPORTANT GUIDELINES FOR ANY AI ASSISTANT
+----------------------------------------
+- Do NOT suggest “just let the LLM handle it”
+- Do NOT hide logic inside prompts
+- Do NOT turn memory into chat history
+- Do NOT exceed the bounded agent loop
+- Prefer explicit Java code over clever prompt tricks
+- Assume the user is an experienced backend engineer
+
+
+Goal
+----
+Build a maintainable, testable, production-grade agent system in Java,
+not a toy chatbot.
+==================================To Do====================================
+SPRING AI AGENT — REMAINING TODO ITEMS
+=====================================
+
+CORE (HIGH PRIORITY)
+--------------------
+
+1. Add planner unit tests
+   - Test tool-only questions
+   - Test retrieval-only questions
+   - Test multi-intent questions (tool + retrieval)
+   - Test memory-based reference resolution (“it”)
+   - Prevent regressions in planner logic
+
+2. Make memory production-safe
+   - Introduce conversationId in ChatRequest
+   - Implement MemoryStore interface
+   - Default implementation: in-memory Map
+   - Ensure memory isolation per conversation
+   - Add basic memory eviction policy
+
+3. Improve answer prompt discipline
+   - Do not include policy info unless retrieval occurred
+   - Do not hedge or speculate
+   - Remove “I would need to check” language
+   - Ensure TOOL_RESULT is treated as authoritative
+
+STABILITY / QUALITY
+-------------------
+
+4. Normalize citations
+   - Replace “classpath” placeholders
+   - Attach real document identifiers
+   - Ensure citations appear only when retrieval occurs
+
+5. Add agent phase logging
+   - Log PLAN output
+   - Log RETRIEVE invocation
+   - Log TOOL execution
+   - Log ANSWER generation
+   - Add timing per phase
+
+6. Add negative-path handling
+   - Missing orderId
+   - Unknown orderId
+   - Retrieval returns no documents
+   - Tool failure scenarios
+
+EXTENSIBILITY
+-------------
+
+7. Split planner and answer models (optional)
+   - Small, fast model for planner
+   - Larger model for answer generation
+   - Keep shared memory and tools
+
+8. Add Kafka as a tool (optional)
+   - Produce domain events from agent
+   - Consume events as agent inputs
+   - Keep tool interface deterministic
+
+9. Persist memory externally (optional)
+   - Redis-based MemoryStore
+   - TTL-based eviction
+   - Support horizontal scaling
+
+DOCUMENTATION
+-------------
+
+10. Add README.md
+    - Architecture overview
+    - Agent loop explanation
+    - Memory model explanation
+    - How to run locally (Docker + Ollama)
+    - How to test memory and multi-intent flows
+
+11. Add architecture diagram
+    - PLAN → RETRIEVE → TOOL → ANSWER
+    - Memory and tool boundaries
+    - External systems (Postgres, Ollama)
+
+CLEANUP
+-------
+
+12. Remove temporary testing shortcuts
+    - Replace shared in-memory memory in controller
+    - Enforce conversationId usage
+    - Harden controller for multi-user scenarios
+
+
+END GOAL
+--------
+A production-grade, testable, deterministic Spring AI agent
+with explicit orchestration, memory, tools, and retrieval.
