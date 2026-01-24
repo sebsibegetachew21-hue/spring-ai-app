@@ -7,6 +7,7 @@ import com.yourapp.ai.tools.OrderTools;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -102,7 +103,8 @@ public class AgentOrchestrator {
             """;
 
 
-    private final ChatClient chatClient;
+    private final ChatClient plannerChatClient;
+    private final ChatClient answerChatClient;
     private final OrderTools orderTools;
     private final RetrieverService retriever;
     private final Timer plannerTimer;
@@ -111,12 +113,14 @@ public class AgentOrchestrator {
     private final Timer retrievalTimer;
 
     public AgentOrchestrator(
-            ChatClient chatClient,
+            @Qualifier("plannerChatClient") ChatClient plannerChatClient,
+            @Qualifier("answerChatClient") ChatClient answerChatClient,
             OrderTools orderTools,
             RetrieverService retriever,
             MeterRegistry meterRegistry
     ) {
-        this.chatClient = chatClient;
+        this.plannerChatClient = plannerChatClient;
+        this.answerChatClient = answerChatClient;
         this.orderTools = orderTools;
         this.retriever = retriever;
         this.plannerTimer = Timer.builder("agent.planner.duration")
@@ -159,6 +163,22 @@ public class AgentOrchestrator {
 
         log.info("Agent plan {}", plan);
 
+        if (plan.needsTool() && plan.toolArgument() == null) {
+            return new AgentAnswer(
+                    "Missing required orderId for tool execution.",
+                    List.of(),
+                    "low"
+            );
+        }
+        if (plan.needsTool() && plan.toolArgument() != null
+                && !plan.toolArgument().matches("\\d+")) {
+            return new AgentAnswer(
+                    "Invalid orderId for tool execution.",
+                    List.of(),
+                    "low"
+            );
+        }
+
         /* -------------------------------------------------
          * 3. RETRIEVE (RAG)
          * ------------------------------------------------- */
@@ -173,6 +193,13 @@ public class AgentOrchestrator {
             citations = retrieval.citations();
             retrievalTimer.record(durationMs, java.util.concurrent.TimeUnit.MILLISECONDS);
             log.info("Retrieval completed durationMs={} citations={}", durationMs, citations.size());
+            if (retrieval.context() == null || retrieval.context().isBlank()) {
+                return new AgentAnswer(
+                        "No relevant policy documents were found for this question.",
+                        List.of(),
+                        "low"
+                );
+            }
         }
 
         /* -------------------------------------------------
@@ -184,11 +211,20 @@ public class AgentOrchestrator {
             String orderId = plan.toolArgument();
 
             log.info("Tool invocation name=getOrderStatus orderId={}", orderId);
-            long startNanos = System.nanoTime();
-            Map<String, Object> result =
-                    orderTools.getOrderStatus(orderId);
-            long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
-            toolTimer.record(durationMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            Map<String, Object> result;
+            try {
+                long startNanos = System.nanoTime();
+                result = orderTools.getOrderStatus(orderId);
+                long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+                toolTimer.record(durationMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                log.warn("Tool invocation failed name=getOrderStatus orderId={}", orderId, e);
+                return new AgentAnswer(
+                        "Tool execution failed for orderId " + orderId + ".",
+                        List.of(),
+                        "low"
+                );
+            }
 
             // Persist to MEMORY (write-only by code)
             memory.put("lastOrderId", orderId);
@@ -211,8 +247,7 @@ public class AgentOrchestrator {
         }
 
         String hasContext = plan.needsRetrieval() ? "true" : "false";
-        String hasToolResult =
-                (plan.needsTool() && plan.toolArgument() != null) ? "true" : "false";
+        String hasToolResult = toolResultBlock.isBlank() ? "false" : "true";
 
         String finalPrompt =
                 memoryBlock +
@@ -240,7 +275,7 @@ public class AgentOrchestrator {
 
         String answer =
                 callAnswerModel(finalPrompt);
-        answer = sanitizeAnswer(answer, plan.needsRetrieval(), plan.needsTool() && plan.toolArgument() != null);
+        answer = sanitizeAnswer(answer, plan.needsRetrieval(), !toolResultBlock.isBlank());
 
 
 //        String answer =
@@ -298,7 +333,7 @@ public class AgentOrchestrator {
 
         long startNanos = System.nanoTime();
         String json =
-                chatClient.prompt()
+                plannerChatClient.prompt()
                         .system(system -> system.text(PLANNER_SYSTEM_PROMPT))
                         .user(user -> user.text(enrichedQuestion))
                         .call()
@@ -346,7 +381,7 @@ public class AgentOrchestrator {
     private String callAnswerModel(String finalPrompt) {
         long startNanos = System.nanoTime();
         String content =
-                chatClient.prompt()
+                answerChatClient.prompt()
                         .system(system -> system.text(ANSWER_SYSTEM_PROMPT))
                         .user(user -> user.text(finalPrompt))
                         .call()
@@ -366,6 +401,20 @@ public class AgentOrchestrator {
 
         for (String line : lines) {
             String trimmed = line.trim();
+            if (trimmed.toLowerCase().contains("no tool_result")
+                    || trimmed.toLowerCase().contains("no tool result")) {
+                continue;
+            }
+            if (trimmed.toLowerCase().startsWith("however, i don't have")
+                    || trimmed.toLowerCase().startsWith("however, i do not have")
+                    || trimmed.toLowerCase().startsWith("i don't have information")
+                    || trimmed.toLowerCase().startsWith("i do not have information")
+                    || trimmed.toLowerCase().startsWith("however, since we don't have")
+                    || trimmed.toLowerCase().startsWith("however, since we do not have")
+                    || trimmed.toLowerCase().startsWith("since we don't have information")
+                    || trimmed.toLowerCase().startsWith("since we do not have information")) {
+                continue;
+            }
             if (trimmed.equalsIgnoreCase("Policy:")) {
                 includePolicy = hasContext;
                 includeSystem = false;

@@ -20,6 +20,9 @@ spring:
     url: jdbc:postgresql://localhost:5432/postgres
     username: postgres
     password: postgres
+  redis:
+    host: localhost
+    port: 6379
 
 
   vectorstore:
@@ -32,6 +35,13 @@ app:
     clear-on-startup: true
     docs-pattern: classpath:/docs/policy.txt
     vector-table: vector_store
+  memory:
+    store: redis
+    redis-ttl: PT30M
+    redis-key-prefix: "memory:"
+  models:
+    planner: llama3.2:3b
+    answer: mistral:7b-instruct
 
 management:
   tracing:

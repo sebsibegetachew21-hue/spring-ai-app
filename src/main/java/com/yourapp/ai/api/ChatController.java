@@ -34,6 +34,8 @@ public class ChatController {
           return created;
         });
 
-    return agent.run(req.question(), memory);
+    AgentAnswer answer = agent.run(req.question(), memory);
+    memoryStore.put(key, memory);
+    return answer;
   }
 }

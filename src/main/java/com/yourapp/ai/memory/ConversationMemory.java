@@ -7,6 +7,14 @@ public class ConversationMemory {
 
     private final Map<String, Object> memory = new HashMap<>();
 
+    public ConversationMemory() {}
+
+    public ConversationMemory(Map<String, Object> initial) {
+        if (initial != null) {
+            memory.putAll(initial);
+        }
+    }
+
     public void put(String key, Object value) {
         memory.put(key, value);
     }

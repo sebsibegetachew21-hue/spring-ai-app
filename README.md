@@ -25,6 +25,8 @@ Rules:
 - Retrieval is used only for policies / documentation
 - Tool calls are used only for system data (for example, order status)
 
+See detailed diagram: `src/main/resources/architecture.md`.
+
 ## Planner Contract
 Planner output JSON shape:
 
@@ -96,6 +98,7 @@ Verified interaction:
 - Planner: strict JSON with `needsRetrieval`, `needsTool`, `toolName`, `toolArgument`.
 - Planner validation: strict schema and tool allowlist enforced in parser.
 - Deterministic override: if operational intent + orderId detected, tool is forced to run or backfilled.
+- Model routing: separate planner vs answer models via `app.models.planner` and `app.models.answer`.
 - Retrieval: pgvector similarity search over ingested docs with citations.
 - Tools: deterministic Java methods (for example, `getOrderStatus`) that write to in-memory `ConversationMemory`.
 - Memory: in-memory only, shared in `ChatController` (single conversation).
@@ -144,6 +147,11 @@ Phase 4: Governance and Ops
 10. Normalize citations with stable doc IDs and versioned ingestion.
 11. Add authn/authz and rate limiting on `/chat`.
 12. Add dashboards/alerts for latency, error rate, and token usage.
+
+## Priority Order (Value + Learning)
+1. Negative-path handling (robustness and user experience). ✅
+2. RedisMemoryStore with TTL (scaling and durability). ✅
+3. Model routing (cost/latency optimization).
 
 ## Important Guidelines
 - Do not suggest "just let the LLM handle it"

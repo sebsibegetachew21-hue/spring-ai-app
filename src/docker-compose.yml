@@ -10,6 +10,22 @@ services:
       - ollama-data:/root/.ollama
     restart: unless-stopped
 
+  ollama-init:
+    image: ollama/ollama
+    container_name: ollama-init
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    depends_on:
+      - ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      ollama pull llama3.2:3b &&
+      ollama pull mistral:7b-instruct &&
+      ollama pull nomic-embed-text
+    restart: "no"
+
   pgvector:
     image: pgvector/pgvector:pg16
     container_name: pgvector
@@ -34,6 +50,16 @@ services:
     depends_on:
       - pgvector
 
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
 volumes:
   ollama-data:
   pgvector-data:
+  redis-data:
