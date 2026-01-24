@@ -1,4 +1,6 @@
 spring:
+  application:
+    name: spring-ai-full-demo
   ai:
     ollama:
       base-url: http://localhost:11434
@@ -23,3 +25,22 @@ spring:
   vectorstore:
     pgvector:
       initialize-schema: true
+
+app:
+  rag:
+    ingest-on-startup: true
+    clear-on-startup: true
+    docs-pattern: classpath:/docs/policy.txt
+    vector-table: vector_store
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{36} - %msg requestId=%X{requestId}%n"

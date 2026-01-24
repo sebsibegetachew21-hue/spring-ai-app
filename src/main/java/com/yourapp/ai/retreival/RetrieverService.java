@@ -1,6 +1,8 @@
 package com.yourapp.ai.retreival;
 
 import com.yourapp.ai.retreival.RetrievalResult;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
@@ -12,9 +14,13 @@ import java.util.stream.Collectors;
 public class RetrieverService {
 
     private final VectorStore vectorStore;
+    private final Counter retrievalCounter;
 
-    public RetrieverService(VectorStore vectorStore) {
+    public RetrieverService(VectorStore vectorStore, MeterRegistry meterRegistry) {
         this.vectorStore = vectorStore;
+        this.retrievalCounter = Counter.builder("agent.retrieval.count")
+                .description("Number of retrieval calls")
+                .register(meterRegistry);
     }
 
     /**
@@ -24,6 +30,7 @@ public class RetrieverService {
 
         List<Document> docs =
                 vectorStore.similaritySearch(question);
+        retrievalCounter.increment();
 
         String context =
                 docs.stream()
