@@ -9,6 +9,7 @@ import io.micrometer.core.instrument.Timer;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
 import java.util.Map;
@@ -160,6 +161,8 @@ public class AgentOrchestrator {
          * ------------------------------------------------- */
         AgentPlan plan = plan(enrichedQuestion);
         plan = applyDeterministicOverrides(plan, question);
+        AgentPlan finalPlan = plan;
+        
 
         log.info("Agent plan {}", plan);
 
@@ -248,6 +251,8 @@ public class AgentOrchestrator {
 
         String hasContext = plan.needsRetrieval() ? "true" : "false";
         String hasToolResult = toolResultBlock.isBlank() ? "false" : "true";
+        String finalToolResultBlock = toolResultBlock;
+       
 
         String finalPrompt =
                 memoryBlock +
@@ -285,6 +290,106 @@ public class AgentOrchestrator {
                 plan.needsRetrieval() ? citations : List.of();
 
         return new AgentAnswer(answer, finalCitations, "medium");
+    }
+
+    public Flux<String> runStream(String question, ConversationMemory memory) {
+        String enrichedQuestion = question;
+
+        if (memory.contains("lastOrderId")) {
+            enrichedQuestion +=
+                    "\n\nPrevious context: lastOrderId=" + memory.get("lastOrderId");
+        }
+
+        AgentPlan plan = plan(enrichedQuestion);
+        plan = applyDeterministicOverrides(plan, question);
+        log.info("Agent plan {}", plan);
+
+        if (plan.needsTool() && plan.toolArgument() == null) {
+            return Flux.just("Missing required orderId for tool execution.");
+        }
+        if (plan.needsTool() && plan.toolArgument() != null
+                && !plan.toolArgument().matches("\\d+")) {
+            return Flux.just("Invalid orderId for tool execution.");
+        }
+
+        String contextBlock = "";
+        if (plan.needsRetrieval()) {
+            long startNanos = System.nanoTime();
+            RetrievalResult retrieval = retriever.retrieve(question);
+            long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+            contextBlock = "CONTEXT:\n" + retrieval.context() + "\n\n";
+            retrievalTimer.record(durationMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            log.info("Retrieval completed durationMs={} citations={}", durationMs, retrieval.citations().size());
+            if (retrieval.context() == null || retrieval.context().isBlank()) {
+                return Flux.just("No relevant policy documents were found for this question.");
+            }
+        }
+
+        String toolResultBlock = "";
+        if (plan.needsTool() && plan.toolArgument() != null) {
+            String orderId = plan.toolArgument();
+            log.info("Tool invocation name=getOrderStatus orderId={}", orderId);
+            try {
+                long startNanos = System.nanoTime();
+                Map<String, Object> result = orderTools.getOrderStatus(orderId);
+                long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+                toolTimer.record(durationMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+                memory.put("lastOrderId", orderId);
+                memory.put("lastOrderStatus", result.get("status"));
+
+                toolResultBlock = "TOOL_RESULT:\n" + result + "\n\n";
+            } catch (Exception e) {
+                log.warn("Tool invocation failed name=getOrderStatus orderId={}", orderId, e);
+                return Flux.just("Tool execution failed for orderId " + orderId + ".");
+            }
+        }
+
+        String memoryBlock = "";
+        if (!memory.snapshot().isEmpty()) {
+            memoryBlock =
+                    "MEMORY (read-only):\n" +
+                            memory.snapshot() +
+                            "\n\n";
+        }
+
+        String hasContext = plan.needsRetrieval() ? "true" : "false";
+        String hasToolResult = toolResultBlock.isBlank() ? "false" : "true";
+
+        String finalPrompt =
+                memoryBlock +
+                        "QUESTION:\n" + question + "\n\n" +
+                        "HAS_CONTEXT: " + hasContext + "\n" +
+                        "HAS_TOOL_RESULT: " + hasToolResult + "\n\n" +
+                        contextBlock +
+                        toolResultBlock +
+                        """
+                                Answer the question using:
+                                - CONTEXT for policies and documentation
+                                - TOOL_RESULT for system data
+                                - MEMORY only as reference
+                                                
+                                Rules:
+                                - If TOOL_RESULT is present, you MUST include it
+                                - Do NOT guess
+                                - Do NOT describe tool results as simulated
+                                - If information is missing, say so
+                                - Separate policy info and system data clearly when both are present
+                                - Do NOT suggest contacting customer service or checking a website unless asked
+                                - Do NOT ask for more details unless the question cannot be answered with provided CONTEXT/TOOL_RESULT
+                                - Output must match the required format exactly and contain only those sections
+                                """;
+
+        long startNanos = System.nanoTime();
+        String content = answerChatClient.prompt()
+                .system(system -> system.text(ANSWER_SYSTEM_PROMPT))
+                .user(user -> user.text(finalPrompt))
+                .call()
+                .content();
+        String sanitized = sanitizeAnswer(content, plan.needsRetrieval(), !toolResultBlock.isBlank());
+        long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+        log.info("LLM answer stream completed durationMs={}", durationMs);
+        return Flux.just(sanitized);
     }
 
     /* -------------------------------------------------

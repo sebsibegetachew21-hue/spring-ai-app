@@ -104,6 +104,51 @@ Verified interaction:
 - Memory: in-memory only, shared in `ChatController` (single conversation).
 - Observability: SLF4J phase logs, Micrometer tracing (OTLP), request ID propagation, and custom timers/counters.
 
+## Sample Request
+```bash
+curl -s -X POST http://localhost:8080/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"conversationId":"demo1","question":"Can I return a damaged item and what is the status of order 12345?"}'
+```
+
+Expected response (shape):
+```json
+{
+  "answer": "Policy: ...\\n\\nSystem: ...",
+  "citations": ["classpath"],
+  "confidence": "medium"
+}
+```
+
+## Streaming Request
+```bash
+curl -N -s -X POST http://localhost:8080/chat/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"conversationId":"demo1","question":"Can I return a damaged item and what is the status of order 12345?"}'
+```
+
+Expected response:
+- SSE stream of text chunks (Policy/System sections).
+
+## Spring AI Overview Feature Mapping (Text Only)
+Implemented:
+- Chat model support (Ollama).
+- Embeddings (Ollama).
+- Vector store (pgvector).
+- RAG pipeline (retrieve context + citations).
+- Tools/function calling (deterministic Java tools).
+- Observability (tracing + logs + metrics).
+- ChatClient API usage.
+- Conversation memory (app-owned, Redis/in-memory).
+- Spring Boot auto-configuration for model + vector store.
+
+Not implemented (by design or pending):
+- Structured outputs (POJO mapping) for answers.
+- Advisors API (not used; explicit orchestration instead).
+- ETL framework for ingestion (manual DocIngestor used).
+- AI model evaluation utilities.
+- Streaming responses.
+
 ## Planned Work
 Core:
 1. Add planner unit tests
@@ -152,6 +197,25 @@ Phase 4: Governance and Ops
 1. Negative-path handling (robustness and user experience). ✅
 2. RedisMemoryStore with TTL (scaling and durability). ✅
 3. Model routing (cost/latency optimization).
+
+## Handoff / Resume
+Last updated: 2026-01-24
+
+Current state:
+- Planner/Answer split is live: planner uses `llama3.2:3b`, answer uses `mistral:7b-instruct`.
+- RedisMemoryStore is enabled via `app.memory.store: redis` with TTL config.
+- Negative-path handling covers missing orderId, tool failures, and empty retrieval.
+- Observability (logs + metrics + traces) is enabled with Jaeger/OTLP.
+- Architecture diagrams live at `src/main/resources/architecture.md`.
+
+Next steps:
+1. Retrieval relevance threshold to prevent irrelevant policy answers.
+2. Optional sanitizer tightening to eliminate remaining hedging.
+3. TTL/eviction for in-memory MemoryStore (if needed for local fallback).
+
+Quick sanity checks:
+- `redis-cli -h localhost -p 6379 get 'memory:r1'` shows stored memory.
+- Planner spans use `llama3.2:3b`; answer spans use `mistral:7b-instruct`.
 
 ## Important Guidelines
 - Do not suggest "just let the LLM handle it"
