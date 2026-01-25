@@ -23,6 +23,11 @@ spring:
   redis:
     host: localhost
     port: 6379
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://dev-65cc4mjvkuzun5kd.us.auth0.com/
 
 
   vectorstore:
@@ -42,6 +47,9 @@ app:
   models:
     planner: llama3.2:3b
     answer: mistral:7b-instruct
+  security:
+    auth0:
+      audience: https://spring-ai-app0913417274
 
 management:
   tracing:

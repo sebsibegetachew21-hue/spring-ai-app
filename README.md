@@ -51,7 +51,7 @@ Planner rules:
 - Tools write memory (for example, lastOrderId, lastOrderStatus)
 - Planner reads memory to resolve references ("it", "the order")
 - LLM receives a read-only snapshot of memory
-- Memory is currently in-memory (testing mode)
+- Memory is stored per `conversationId` (Redis or in-memory)
 
 Example memory snapshot:
 
@@ -78,15 +78,17 @@ Rules:
 - Used only for policies, FAQs, and documentation
 - Vector store: pgvector (Postgres)
 - Retriever returns chunks + citations
+- Retrieval enforces a similarity threshold and can expand referenced policies
 - Answer prompt must not introduce policy info unless retrieval occurred
 
 ## Current Status
 - Tool calling works
 - RAG works
-- Memory works (resolves "it" correctly)
+- Memory works (resolves "it" correctly) with Redis or in-memory store
 - Multi-intent questions work after planner prompt fix
-- Citations currently show "classpath" (acceptable for now)
-- Answer tone slightly verbose (prompt polish optional)
+- Citations include policy metadata (for example, `policy_refunds#chunk0`)
+- Streaming endpoint is available (buffered SSE)
+- JWT security is enabled (Auth0 issuer + audience)
 
 Verified interaction:
 1. "What is the status of order 12345?"
@@ -94,24 +96,26 @@ Verified interaction:
 -> Correct tool + memory + retrieval behavior
 
 ## Current Behavior
-- API: `POST /chat` accepts `{"question":"..."}` and returns `{"answer","citations","confidence"}`.
+- API: `POST /chat` accepts `{"conversationId":"...","question":"..."}` and returns `{"answer","citations","confidence"}`.
+- Streaming: `POST /chat/stream` returns SSE with buffered response chunks.
 - Planner: strict JSON with `needsRetrieval`, `needsTool`, `toolName`, `toolArgument`.
 - Planner validation: strict schema and tool allowlist enforced in parser.
 - Deterministic override: if operational intent + orderId detected, tool is forced to run or backfilled.
 - Model routing: separate planner vs answer models via `app.models.planner` and `app.models.answer`.
 - Cross-policy retrieval: referenced policies are expanded during retrieval.
 - Timing extraction: policy answers must include numeric timing when asked.
-- Retrieval: pgvector similarity search over ingested docs with citations.
+- Retrieval: pgvector similarity search over ingested docs with a relevance threshold.
 - Policy metadata: `policyId`, `title`, and `chunkIndex` used for traceable citations.
-- Retrieval relevance: similarity threshold enforced to reduce unrelated policies.
-- Tools: deterministic Java methods (for example, `getOrderStatus`) that write to in-memory `ConversationMemory`.
-- Memory: in-memory only, shared in `ChatController` (single conversation).
+- Tools: deterministic Java methods (for example, `getOrderStatus`) that write to `ConversationMemory`.
+- Memory: Redis or in-memory `MemoryStore` with per-conversation isolation and TTL.
 - Observability: SLF4J phase logs, Micrometer tracing (OTLP), request ID propagation, and custom timers/counters.
+- Security: JWT validation against Auth0 issuer + audience with scope `chat:access` on `/chat/**`.
 
 ## Sample Request
 ```bash
 curl -s -X POST http://localhost:8080/chat \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <access_token>' \
   -d '{"conversationId":"demo1","question":"Can I return a damaged item and what is the status of order 12345?"}'
 ```
 
@@ -119,15 +123,25 @@ Expected response (shape):
 ```json
 {
   "answer": "Policy: ...\\n\\nSystem: ...",
-  "citations": ["classpath"],
+  "citations": ["policy_returns#chunk0"],
   "confidence": "medium"
 }
+```
+
+Policy-only example:
+```bash
+TOKEN=$(./scripts/get-token.sh | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p') && \
+curl -s -X POST http://localhost:8080/chat \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"conversationId":"demo2","question":"What is the refund timing for damaged items?"}'
 ```
 
 ## Streaming Request
 ```bash
 curl -N -s -X POST http://localhost:8080/chat/stream \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <access_token>' \
   -d '{"conversationId":"demo1","question":"Can I return a damaged item and what is the status of order 12345?"}'
 ```
 
@@ -145,29 +159,26 @@ Implemented:
 - ChatClient API usage.
 - Conversation memory (app-owned, Redis/in-memory).
 - Spring Boot auto-configuration for model + vector store.
+- Streaming responses (buffered SSE, not token streaming).
 
 Not implemented (by design or pending):
 - Structured outputs (POJO mapping) for answers.
 - Advisors API (not used; explicit orchestration instead).
 - ETL framework for ingestion (manual DocIngestor used).
 - AI model evaluation utilities.
-- Streaming responses.
 
 ## Planned Work
 Core:
 1. Add planner unit tests
-2. Make memory production-safe (conversationId, MemoryStore, eviction)
-3. Improve answer prompt discipline
+2. Improve answer prompt discipline
 
 Stability / quality:
-4. Normalize citations
-5. Add agent phase logging with timing
-6. Add negative-path handling
+3. Normalize citations with stable, versioned doc IDs
+4. Add structured error payloads (400/422/500)
 
 Extensibility (optional):
-7. Split planner and answer models
-8. Add Kafka as a tool
-9. Persist memory externally (Redis)
+5. Add Kafka as a tool
+6. Add streaming token support (true token streaming)
 
 Documentation:
 10. Add architecture diagram
@@ -176,26 +187,21 @@ Documentation:
 Cleanup:
 12. Remove temporary testing shortcuts and enforce conversationId usage
 
-## Enterprise Readiness Plan (Next)
-Phase 1: Reliability and Contracts
-1. Add request validation and typed error responses (400/422/500) with structured error payloads.
-2. Harden planner contract: schema versioning, allowlist, and explicit rejection paths.
-3. Add negative-path handling: missing orderId, tool failures/timeouts, retrieval empty, model errors.
+## Enterprise Readiness Plan (Status)
+Completed:
+1. Harden planner contract: schema validation and tool allowlist.
+2. Add negative-path handling: missing orderId, tool failures/timeouts, retrieval empty.
+3. Implement RedisMemoryStore with per-conversation isolation and TTL.
+4. Propagate conversationId into logs/metrics/traces for multi-tenant debugging.
+5. Split planner vs answer models (smaller planner model, larger answer model).
+6. Add authn/authz on `/chat` with JWT + scope.
 
-Phase 2: Memory and Scaling
-4. Add TTL/eviction for in-memory MemoryStore to prevent unbounded growth.
-5. Implement RedisMemoryStore with per-conversation isolation, TTL, and health checks.
-6. Propagate conversationId into logs/metrics/traces for multi-tenant debugging.
-
-Phase 3: Model and Performance
-7. Split planner vs answer models (smaller planner model, larger answer model).
-8. Add timeouts, retries, and circuit breakers around model/tool calls.
-9. Tune prompt length, context limits, and retrieval topK for latency control.
-
-Phase 4: Governance and Ops
-10. Normalize citations with stable doc IDs and versioned ingestion.
-11. Add authn/authz and rate limiting on `/chat`.
-12. Add dashboards/alerts for latency, error rate, and token usage.
+Next:
+1. Add request validation and typed error responses (400/422/500) with structured payloads.
+2. Add timeouts, retries, and circuit breakers around model/tool calls.
+3. Tune prompt length, context limits, and retrieval topK for latency control.
+4. Normalize citations with stable doc IDs and versioned ingestion.
+5. Add dashboards/alerts for latency, error rate, and token usage.
 
 ## Priority Order (Value + Learning)
 1. Negative-path handling (robustness and user experience). ✅
@@ -203,7 +209,7 @@ Phase 4: Governance and Ops
 3. Model routing (cost/latency optimization).
 
 ## Handoff / Resume
-Last updated: 2026-01-24
+Last updated: 2026-01-25
 
 Current state:
 - Planner/Answer split is live: planner uses `llama3.2:3b`, answer uses `mistral:7b-instruct`.
@@ -211,11 +217,13 @@ Current state:
 - Negative-path handling covers missing orderId, tool failures, and empty retrieval.
 - Observability (logs + metrics + traces) is enabled with Jaeger/OTLP.
 - Architecture diagrams live at `src/main/resources/architecture.md`.
+- JWT security enabled (Auth0 issuer + audience).
+- Buffered streaming is available at `/chat/stream`.
 
 Next steps:
-1. Retrieval relevance threshold to prevent irrelevant policy answers.
-2. Optional sanitizer tightening to eliminate remaining hedging.
-3. TTL/eviction for in-memory MemoryStore (if needed for local fallback).
+1. Optional sanitizer tightening to eliminate remaining hedging.
+2. TTL/eviction for in-memory MemoryStore (if needed for local fallback).
+3. Add planner unit tests to lock routing behavior.
 
 Quick sanity checks:
 - `redis-cli -h localhost -p 6379 get 'memory:r1'` shows stored memory.

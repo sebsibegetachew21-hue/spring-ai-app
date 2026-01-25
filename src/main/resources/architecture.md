@@ -2,7 +2,8 @@
 
 ```mermaid
 flowchart TD
-    A[Client] -->|POST /chat| B[ChatController]
+    A[Client] -->|JWT Bearer| S[Security Filter]
+    S -->|POST /chat| B[ChatController]
     B -->|conversationId| C[MemoryStore]
     C -->|ConversationMemory| D[AgentOrchestrator]
 
@@ -26,6 +27,8 @@ flowchart TD
 - Planner and answer models are routed separately via `app.models.planner` and `app.models.answer`.
 - Memory is stored per `conversationId` (Redis or in-memory).
 - Retrieval is only for policy/FAQ docs; tools are only for system data.
+- Retrieval enforces a similarity threshold and expands referenced policies.
+- Streaming uses buffered SSE (not true token streaming).
 
 ## Deployment Diagram
 
@@ -36,25 +39,30 @@ flowchart LR
     end
 
     subgraph SpringAI["Spring AI App"]
-        B[Spring Boot App]
-        C[AgentOrchestrator]
+        B[Security Filter]
+        C[Spring Boot App]
+        D[AgentOrchestrator]
     end
 
     subgraph Infra["Local Infra"]
-        D[Ollama :11434]
-        E[Postgres + pgvector :5432]
-        F[Redis :6379]
-        G[Jaeger UI :16686]
+        O[Ollama :11434]
+        P[Postgres + pgvector :5432]
+        R[Redis :6379]
+        I[Auth0 Issuer]
+        J[Jaeger UI :16686]
         H[OTLP Collector :4318]
     end
 
     A -->|HTTP POST /chat| B
+    A -->|HTTP POST /chat/stream| B
+    B -->|JWT verify| I
     B --> C
-    C -->|planner/answer| D
-    C -->|vector search| E
-    C -->|memory store| F
-    B -->|traces| H
-    H --> G
+    C --> D
+    D -->|planner/answer| O
+    D -->|vector search| P
+    D -->|memory store| R
+    C -->|traces| H
+    H --> J
 ```
 
 ## Sequence Diagram
@@ -62,6 +70,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant Client
+    participant Security as Security Filter
     participant Controller as ChatController
     participant Memory as MemoryStore
     participant Orchestrator as AgentOrchestrator
@@ -71,7 +80,9 @@ sequenceDiagram
     participant Tool as OrderTools
     participant Answer as Answer LLM
 
-    Client->>Controller: POST /chat
+    Client->>Security: POST /chat
+    Security->>Security: validate JWT + scope
+    Security->>Controller: pass
     Controller->>Memory: get(conversationId)
     Controller->>Orchestrator: run(question, memory)
     Orchestrator->>Planner: PLAN (llama3.2:3b)
@@ -97,10 +108,10 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A[Docs: policy.txt, faq.txt] --> B[DocIngestor]
+    A[Docs: policy_*.txt, faq.txt] --> B[DocIngestor]
     B -->|chunks + metadata| C[Vector Store: pgvector]
     D[User Question] --> E[RetrieverService]
-    E -->|similaritySearch| C
+    E -->|similaritySearch + threshold| C
     C -->|context + citations| E
     E --> F[AgentOrchestrator]
     G[OrderTools] --> F

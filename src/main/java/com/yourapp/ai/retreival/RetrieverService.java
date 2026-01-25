@@ -40,7 +40,7 @@ public class RetrieverService {
                 vectorStore.similaritySearch(
                         SearchRequest.builder()
                                 .query(question)
-                                .similarityThreshold(0.0)
+                                .similarityThreshold(0.60)
                                 .build()
                 );
         retrievalCounter.increment();
