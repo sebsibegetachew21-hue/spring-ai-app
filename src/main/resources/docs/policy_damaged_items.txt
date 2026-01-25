@@ -1,0 +1,4 @@
+Policy: Damaged Items
+- Damaged items can be returned within 60 days with proof of purchase.
+- Items must be reported as damaged within 7 days of delivery.
+- For refund processing, follow Policy: Refunds.

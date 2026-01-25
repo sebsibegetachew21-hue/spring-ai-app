@@ -276,6 +276,7 @@ public class AgentOrchestrator {
                                 - Do NOT suggest contacting customer service or checking a website unless asked
                                 - Do NOT ask for more details unless the question cannot be answered with provided CONTEXT/TOOL_RESULT
                                 - Output must match the required format exactly and contain only those sections
+                                - If the question asks for timing, durations, or windows, you MUST include numeric timing from CONTEXT
                                 """;
 
         String answer =

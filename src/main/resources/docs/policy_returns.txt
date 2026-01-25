@@ -1,0 +1,4 @@
+Policy: Returns
+- Standard returns are allowed within 30 days of delivery with proof of purchase.
+- Damaged items follow the rules in Policy: Damaged Items.
+- Refunds are issued to the original payment method (see Policy: Refunds).

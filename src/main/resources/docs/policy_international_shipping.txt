@@ -1,0 +1,4 @@
+Policy: International Shipping
+- Customs duties and taxes are the responsibility of the recipient.
+- Delivery times vary by destination and carrier.
+- For refunds on international orders, see Policy: Refunds.

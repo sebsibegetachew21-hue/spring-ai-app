@@ -1,0 +1,4 @@
+Policy: Shipping
+- Standard shipping takes 3-5 business days.
+- International shipping is available where permitted (see Policy: International Shipping).
+- Delayed shipments may qualify for reshipment per Policy: Exceptions.

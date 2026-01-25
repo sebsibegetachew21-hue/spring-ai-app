@@ -1,0 +1,4 @@
+Policy: Refunds
+- Refunds are issued to the original payment method within 5-10 business days.
+- Partial refunds may apply for items returned outside standard conditions.
+- For return eligibility, see Policy: Returns and Policy: Damaged Items.

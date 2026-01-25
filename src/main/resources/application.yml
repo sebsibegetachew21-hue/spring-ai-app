@@ -33,7 +33,7 @@ app:
   rag:
     ingest-on-startup: true
     clear-on-startup: true
-    docs-pattern: classpath:/docs/policy.txt
+    docs-pattern: classpath:/docs/policy_*.txt
     vector-table: vector_store
   memory:
     store: redis

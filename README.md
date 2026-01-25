@@ -99,7 +99,11 @@ Verified interaction:
 - Planner validation: strict schema and tool allowlist enforced in parser.
 - Deterministic override: if operational intent + orderId detected, tool is forced to run or backfilled.
 - Model routing: separate planner vs answer models via `app.models.planner` and `app.models.answer`.
+- Cross-policy retrieval: referenced policies are expanded during retrieval.
+- Timing extraction: policy answers must include numeric timing when asked.
 - Retrieval: pgvector similarity search over ingested docs with citations.
+- Policy metadata: `policyId`, `title`, and `chunkIndex` used for traceable citations.
+- Retrieval relevance: similarity threshold enforced to reduce unrelated policies.
 - Tools: deterministic Java methods (for example, `getOrderStatus`) that write to in-memory `ConversationMemory`.
 - Memory: in-memory only, shared in `ChatController` (single conversation).
 - Observability: SLF4J phase logs, Micrometer tracing (OTLP), request ID propagation, and custom timers/counters.
